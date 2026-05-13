@@ -1,3 +1,7 @@
+from collections import deque
+import numpy as np
+import cv2
+
 # ── Config ──────────────────────────────────────────────
 STREAM_URL          = "http://192.168.1.8:8080/video"
 TARGET_COLOR        = "white"
@@ -24,7 +28,7 @@ color_ranges = {
 red_lower1, red_upper1 = (0,   120, 70), (10,  255, 255)
 red_lower2, red_upper2 = (170, 120, 70), (180, 255, 255)
 
-# FOR GOAL BOARDER. Change to whatever color you need Player 1 or whatever.
+# FOR GOAL BOARDER. Change to whatever color you need.
 green_lower = (35, 80, 80)
 green_upper = (85, 255, 255)
 
@@ -33,7 +37,7 @@ CALIBRATION_MODE  = False
 KNOWN_DISTANCE_CM = 20.0
 
 pts = deque(maxlen=BUFFER_SIZE)
-cap = cv2.VideoCapture(0) 
+cap = cv2.VideoCapture(0)               # COMMENT THIS.
 # cap = cv2.VideoCapture(STREAM_URL)
 
 def draw_trajectory(frame, ball_pt, goal_pt):
@@ -41,15 +45,15 @@ def draw_trajectory(frame, ball_pt, goal_pt):
     gx, gy = goal_pt
 
     # Dashed line
-    dist   = np.hypot(gx - bx, gy - by)
-    n_segs = max(1, int(dist / 15))
+    dist   = np.hypot(gx - bx, gy - by)                                 # straight-line pixel distance between ball and goal.
+    n_segs = max(1, int(dist / 15))                                     # split that distance into segments of ~15px each.
     for i in range(n_segs):
-        if i % 2 == 0:
-            t0 = i / n_segs
-            t1 = (i + 1) / n_segs
-            p0 = (int(bx + t0 * (gx - bx)), int(by + t0 * (gy - by)))
-            p1 = (int(bx + t1 * (gx - bx)), int(by + t1 * (gy - by)))
-            cv2.line(frame, p0, p1, (0, 255, 0), 2, cv2.LINE_AA)
+        if i % 2 == 0:                                                  # only draw every OTHER segment, creates the dashes.
+            t0 = i / n_segs                                             # start of this segment (0.0 to 1.0 along the line)
+            t1 = (i + 1) / n_segs                                       # end of this segment
+            p0 = (int(bx + t0 * (gx - bx)), int(by + t0 * (gy - by)))   # start point in pixels
+            p1 = (int(bx + t1 * (gx - bx)), int(by + t1 * (gy - by)))   # end point in pixels
+            cv2.line(frame, p0, p1, (0, 255, 0), 2, cv2.LINE_AA)        # draw the dash
 
     cv2.arrowedLine(frame, ball_pt, goal_pt, (0, 255, 0), 2,
                     cv2.LINE_AA, tipLength=0.08)
@@ -57,16 +61,48 @@ def draw_trajectory(frame, ball_pt, goal_pt):
     # Robot approach position (25% along the line from ball toward goal)
     rx = int(bx + 0.25 * (gx - bx))
     ry = int(by + 0.25 * (gy - by))
+
     cv2.circle(frame, (rx, ry), 8, (0, 165, 255), -1)
     cv2.circle(frame, (rx, ry), 12, (255, 255, 255), 2)
+
     cv2.putText(frame, "Robot pos", (rx + 14, ry + 5),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
 
-    angle_deg = np.degrees(np.arctan2(gy - by, gx - bx))
-    cv2.putText(frame, f"Angle: {angle_deg:.1f} deg",
-                (min(bx, gx) + abs(gx - bx) // 4, max(min(by, gy) - 10, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+    # ── Screen-space alignment / steering angle ─────────
+    # Robot camera forward direction is the CENTER of the image.
+    # We compare target X position against image center.
+    frame_center_x = frame.shape[1] // 2
 
+    # Horizontal error from screen center.
+    dx = rx - frame_center_x
+
+    # Vertical distance from bottom of image.
+    # Bottom ≈ closer to robot.
+    dy = frame.shape[0] - ry
+
+    # Steering angle relative to robot forward direction.
+    # 0°   = straight ahead
+    # +deg = target is to the RIGHT
+    # -deg = target is to the LEFT
+    angle_deg = np.degrees(np.arctan2(dx, dy))
+
+    # Draw camera center line for debugging.
+    cv2.line(frame,
+             (frame_center_x, 0),
+             (frame_center_x, frame.shape[0]),
+             (255, 255, 255), 1)
+
+    # Display steering angle.
+    cv2.putText(frame,
+                f"Steer: {angle_deg:.1f} deg",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2)
+
+    # Return values for robot movement logic.
+    return angle_deg, (rx, ry)
 
 while True:
     ret, frame = cap.read()
@@ -209,7 +245,20 @@ while True:
 
     # ── Trajectory ───────────────────────────────────────
     if center is not None and goal_center is not None:
-        draw_trajectory(frame, center, goal_center)
+
+        # Draw path + compute steering info.
+        angle_deg, robot_target = draw_trajectory(frame, center, goal_center)
+
+        # ── Robot Movement Logic ─────────────────────────
+        # These thresholds prevent tiny steering corrections.
+        if angle_deg > 10:
+            turn_right()        # EDIT THESE.
+
+        elif angle_deg < -10:
+            turn_left()         # EDIT THESE.
+
+        else:
+            forward()           # EDIT THESE.
 
     # ── Display ──────────────────────────────────────────
     cv2.imshow("Frame", frame)
